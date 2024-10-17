@@ -4,7 +4,13 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
+#include <fcntl.h>
+#include <fstream>
+#include <gelf.h>
+#include <iostream>
+#include <libelf.h>
 #include <nanobind/nanobind.h>
+#include <sstream>
 #include <stddef.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -113,6 +119,83 @@ int LibdebugPtraceInterface::prepare_for_run()
     }
 
     return 0;
+}
+
+unsigned long LibdebugPtraceInterface::get_absolute_entrypoint(const pid_t)
+{
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        throw std::runtime_error("ELF library initialization failed: " + std::string(elf_errmsg(-1)));
+    }
+
+    std::string exe_path = "/proc/" + std::to_string(process_id) + "/exe";
+
+    if (access(exe_path.c_str(), R_OK) == -1) {
+        throw std::runtime_error("File not found or not readable: " + exe_path);
+    }
+
+    int fd;
+
+    if ((fd = open(exe_path.c_str(), O_RDONLY, 0)) < 0) {
+        throw std::runtime_error("Error opening file: " + exe_path);
+    }
+
+    Elf *elf;
+
+    if ((elf = elf_begin(fd, ELF_C_READ, NULL)) == NULL) {
+        throw std::runtime_error("Error reading ELF file: " + exe_path);
+    }
+
+    // Get the ELF header
+    GElf_Ehdr ehdr;
+    if (gelf_getehdr(elf, &ehdr) == NULL) {
+        throw std::runtime_error("gelf_getehdr failed: " + std::string(elf_errmsg(-1)));
+    }
+
+    elf_end(elf);
+    close(fd);
+
+    if (ehdr.e_type == ET_DYN) {
+        // If the executable is PIE we have to normalize the entrypoint
+        // w.r.t. the base address of the process
+        unsigned long base_address = get_base_address(process_id);
+
+        return ehdr.e_entry + base_address;
+    }
+
+    return ehdr.e_entry;
+}
+
+unsigned long LibdebugPtraceInterface::get_base_address(const pid_t)
+{
+    // The base address can be found in /proc/<pid>/maps
+    std::string maps_path = "/proc/" + std::to_string(process_id) + "/maps";
+
+    if (access(maps_path.c_str(), R_OK) == -1) {
+        throw std::runtime_error("File not found or not readable: " + maps_path);
+    }
+
+    std::ifstream maps_file(maps_path);
+
+    if (!maps_file.is_open()) {
+        throw std::runtime_error("Error opening file: " + maps_path);
+    }
+
+    std::string line;
+
+    while (std::getline(maps_file, line)) {
+        std::istringstream iss(line);
+        std::string addr_range;
+        iss >> addr_range;
+
+        if (addr_range.find("-") == std::string::npos) {
+            continue;
+        }
+
+        std::string start_addr = addr_range.substr(0, addr_range.find("-"));
+        return std::stoul(start_addr, nullptr, 16);
+    }
+
+    throw std::runtime_error("Base address not found");
 }
 
 LibdebugPtraceInterface::LibdebugPtraceInterface()
@@ -270,6 +353,34 @@ void LibdebugPtraceInterface::set_tracing_options()
     for (auto &t : threads) {
         ptrace(PTRACE_SETOPTIONS, t.first, NULL, options);
     }
+}
+
+void LibdebugPtraceInterface::continue_to_entrypoint()
+{
+    // First, we have to determine the entrypoint of the process
+    // We can do this by reading the ELF header of the process
+    unsigned long entrypoint = get_absolute_entrypoint(process_id);
+
+    // Then we have to set a breakpoint at the entrypoint
+    // On amd64 and i386 we set a 1 byte breakpoint
+    // On aarch64 this is automatically forced to 4 bytes
+    int len = 1;
+
+    // Install the breakpoint
+    register_hw_breakpoint(process_id, entrypoint, (int) 'x', len);
+
+    // Continue the process
+    cont_all_and_set_bps(false);
+
+    // Wait for the process to hit the breakpoint
+    wait_all_and_update_regs();
+
+    if (get_hit_hw_breakpoint(process_id) != entrypoint) {
+        throw std::runtime_error("Failed to hit the entrypoint breakpoint");
+    }
+
+    // Remove the breakpoint
+    unregister_hw_breakpoint(process_id, entrypoint);
 }
 
 void LibdebugPtraceInterface::cont_all_and_set_bps(bool handle_syscalls)
@@ -717,6 +828,11 @@ NB_MODULE(libdebug_ptrace_binding, m)
             "set_ptrace_options",
             &LibdebugPtraceInterface::set_tracing_options,
             "Sets the ptrace options for the process."
+        )
+        .def(
+            "continue_to_entrypoint",
+            &LibdebugPtraceInterface::continue_to_entrypoint,
+            "Continues the process until the entrypoint is reached."
         )
         .def(
             "get_event_msg",

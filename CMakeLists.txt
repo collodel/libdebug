@@ -270,6 +270,9 @@ target_include_directories(libdebug_ptrace_binding PRIVATE libdebug/ptrace/nativ
 # Link required libraries
 target_link_libraries(libdebug_debug_sym_parser PRIVATE elf dwarf iberty)
 
+# Link required libraries
+target_link_libraries(libdebug_ptrace_binding PRIVATE elf)
+
 # Install the binding libraries
 install(TARGETS libdebug_ptrace_binding LIBRARY DESTINATION libdebug/ptrace/native)
 install(TARGETS libdebug_linux_binding LIBRARY DESTINATION libdebug/native)

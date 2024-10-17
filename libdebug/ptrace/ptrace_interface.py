@@ -457,18 +457,7 @@ class PtraceInterface(DebuggingInterface):
         liblog.debugger("Options set")
 
         if continue_to_entry_point:
-            # Now that the process is running, we must continue until we have reached the entry point
-            entry_point = get_entry_point(self._internal_debugger.argv[0])
-
-            # For PIE binaries, the entry point is a relative address
-            entry_point = normalize_and_validate_address(entry_point, self.get_maps())
-
-            bp = Breakpoint(entry_point, hardware=True)
-            self.set_breakpoint(bp)
-            self.cont()
-            self.wait()
-
-            self.unset_breakpoint(bp)
+            self.lib_trace.continue_to_entrypoint()
 
         invalidate_process_cache()
 

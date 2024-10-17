@@ -37,6 +37,10 @@ private:
     void remove_hardware_breakpoint(const HardwareBreakpoint &);
     unsigned long hit_hardware_breakpoint_address(const pid_t);
 
+    // Process private methods
+    unsigned long get_absolute_entrypoint(const pid_t);
+    unsigned long get_base_address(const pid_t);
+
     // On some architectures, you are not allowed to step or cont over a hardware breakpoint
     // This method checks if the thread is on a hardware breakpoint and steps over it
     void arch_check_if_hit_and_step_over();
@@ -60,6 +64,7 @@ public:
     void detach_and_cont();
     void detach_for_kill();
     void set_tracing_options();
+    void continue_to_entrypoint();
 
     // Debugger control flow methods
     void cont_all_and_set_bps(const bool);
